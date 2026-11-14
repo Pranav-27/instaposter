@@ -11,6 +11,7 @@ from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_scheduler as scheduler
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_ssm as ssm
@@ -65,11 +66,15 @@ class PhotoSyncPipeline(cdk.Stack):
 
         ssm.StringParameter(self, "HomeZones", parameter_name=ZONES_PARAM, string_value=zones)
 
+        image = aws_ecr_assets.DockerImageAsset(self, "Image", directory=ROOT, platform=aws_ecr_assets.Platform.LINUX_ARM64)
+
+        def image_code(handler: str) -> _lambda.DockerImageCode:
+            return _lambda.DockerImageCode.from_ecr(image.repository, tag_or_digest=image.asset_hash, cmd=[handler])
+
         fn = _lambda.DockerImageFunction(
             self, "Indexer",
             function_name="photo-sync-indexer",
-            code=_lambda.DockerImageCode.from_image_asset(ROOT, platform=aws_ecr_assets.Platform.LINUX_ARM64,
-                                                          cmd=["photo_sync.indexer.handler"]),
+            code=image_code("photo_sync.indexer.handler"),
             architecture=_lambda.Architecture.ARM_64,
             memory_size=2048,
             timeout=cdk.Duration.seconds(180),
@@ -117,6 +122,33 @@ class PhotoSyncPipeline(cdk.Stack):
             targets=[targets.LambdaFunction(fn)],
         )
 
+        evaluator = _lambda.DockerImageFunction(
+            self, "Evaluator",
+            function_name="photo-sync-evaluator",
+            code=image_code("photo_sync.evaluator.handler"),
+            architecture=_lambda.Architecture.ARM_64,
+            memory_size=512,
+            timeout=cdk.Duration.seconds(120),
+            retry_attempts=0,
+            environment={"TABLE_NAME": TABLE, "HOME_ZONES_PARAM": ZONES_PARAM},
+        )
+        table.grant_read_write_data(evaluator)
+        evaluator.add_to_role_policy(iam.PolicyStatement(
+            actions=["ssm:GetParameter"],
+            resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter{ZONES_PARAM}"],
+        ))
+
+        scheduler_role = iam.Role(self, "EvaluatorSchedulerRole", assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"))
+        evaluator.grant_invoke(scheduler_role)
+        scheduler.CfnSchedule(
+            self, "EvaluatorDaily",
+            name="photo-sync-evaluator-daily",
+            schedule_expression="cron(0 9 * * ? *)",
+            schedule_expression_timezone="America/New_York",
+            flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(mode="OFF"),
+            target=scheduler.CfnSchedule.TargetProperty(arn=evaluator.function_arn, role_arn=scheduler_role.role_arn),
+        )
+
         action = cw_actions.SnsAction(topic)
         errors = fn.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum").create_alarm(
             self, "IndexerErrors", alarm_name="photo-sync-indexer-errors", threshold=1,
@@ -128,5 +160,10 @@ class PhotoSyncPipeline(cdk.Stack):
             evaluation_periods=1, comparison_operator=cw.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
         )
-        for alarm in (errors, depth):
+        evaluator_errors = evaluator.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum").create_alarm(
+            self, "EvaluatorErrors", alarm_name="photo-sync-evaluator-errors", threshold=1,
+            evaluation_periods=1, comparison_operator=cw.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+        )
+        for alarm in (errors, depth, evaluator_errors):
             alarm.add_alarm_action(action)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass
@@ -57,3 +58,35 @@ class Tags:
     blur_score: float = 0.0
     text_visible: bool = False
     notes: str = ""
+
+
+@dataclass
+class PoolPhoto:
+    sha256: str
+    captured_at: datetime
+    lat: float | None
+    lon: float | None
+    phash: str
+    sharpness: float
+    quality: float
+    blur_score: float
+    is_photo: bool
+    is_screenshot: bool
+    is_document: bool
+    is_receipt: bool
+    city: str | None = None
+    neighborhood: str | None = None
+
+
+@dataclass
+class Collection:
+    id: str
+    type: str
+    photo_shas: list[str]
+    duplicates: dict[str, list[str]]
+    start: datetime
+    end: datetime
+    place: str | None
+    member_hash: str
+    ready: bool
+    closed: bool

@@ -228,7 +228,18 @@ Rules:
 -   Photos the curator does not select return to the pool and can feed
     the next monthly dump.
 -   Screenshots, documents, receipts, and other non-photos never join a
-    collection.
+    collection; neither do photos Haiku rates as very blurry (blur score
+    above 0.7).
+-   A trip run also splits when 48 hours pass between photos outside the
+    home zones.
+-   A closed event or trip below its minimum is dropped and its photos
+    are released to the monthly dump; an open one keeps its photos
+    reserved.
+-   The monthly dump is one pool of all remaining postable photos from
+    closed calendar months; photos from the current month never join it.
+-   Near-duplicates (perceptual-hash distance of 6 or less, within 15
+    minutes) collapse to the best photo, with the others kept as
+    alternates.
 
 ### 5.5 Curation
 
@@ -408,6 +419,14 @@ Stored per Photo item:
 -   **Not stored:** the raw EXIF dump, which is re-read from the
     original while it exists (365 days).
 
+Collection items: `pk=COLLECTION#<id>`, `sk=META`,
+`gsi1pk=COLLECTIONS#<status>`, `gsi1sk=<start>#<id>`. Statuses: `READY`,
+`OPEN`, `SUPPRESSED`, `PROPOSED`. Ids are `<TYPE>#<start>#<first sha
+prefix>` (dump: `MONTHLY_DUMP#<YYYY-MM>`); `member_hash` detects
+membership changes. The daily evaluator rewrites `READY`/`OPEN` items,
+deletes stale ones, skips `PROPOSED`, and keeps `SUPPRESSED` items
+suppressed until `member_hash` changes.
+
 Useful access patterns: - Photos by status and time. - Collections by
 status and time. - Proposals by status. - Recent posts (for caption voice).
 
@@ -547,6 +566,9 @@ photo_sync/
 | `EVENT_CLOSE_HOURS` | 24 |
 | `TRIP_CLOSE_HOURS` | 24 |
 | `GPS_INFER_WINDOW_HOURS` | 12 |
+| `TRIP_MAX_GAP_HOURS` | 48 |
+| `MAX_BLUR_SCORE` | 0.7 |
+| `PHASH_MAX_DISTANCE` / `NEAR_DUP_MINUTES` | 6 / 15 |
 | `CAROUSEL_RATIO` | 4:5 |
 | `CAPTION_LANGUAGE` / `HASHTAG_COUNT` | English / 3 |
 | `CAPTIONS_PER_ROUND` | 3 |
@@ -606,6 +628,9 @@ photo_sync/
 
 ### Proposed defaults, not yet confirmed
 
+-   Phase 2 choices: the 48-hour trip split, dropping undersized closed
+    collections into the dump, one dump pool across closed months, the
+    blur cutoff, and the near-duplicate thresholds.
 -   "Disliked" means a candidate you criticized or replaced, or any
     candidate of a rejected proposal; options unpicked in the approved
     round are neutral.

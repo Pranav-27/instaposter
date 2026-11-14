@@ -18,3 +18,14 @@ HOME_ZONES_PARAM = os.environ.get("HOME_ZONES_PARAM", "/photo-sync/home-zones")
 def load_home_zones() -> list[HomeZone]:
     value = boto3.client("ssm", region_name=REGION).get_parameter(Name=HOME_ZONES_PARAM)["Parameter"]["Value"]
     return [HomeZone(**z) for z in json.loads(value)]
+
+MIN_PHOTOS = {"EVENT": 3, "TRIP": 3, "MONTHLY_DUMP": 10}
+EVENT_GAP_HOURS = 3
+EVENT_RADIUS_KM = 5
+EVENT_CLOSE_HOURS = 24
+TRIP_CLOSE_HOURS = 24
+TRIP_MAX_GAP_HOURS = 48
+GPS_INFER_WINDOW_HOURS = 12
+MAX_BLUR_SCORE = 0.7
+PHASH_MAX_DISTANCE = 6
+NEAR_DUP_MINUTES = 15

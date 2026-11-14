@@ -14,8 +14,13 @@ ZONES = [{"lat": 40.7, "lon": -74.0, "radius_km": 1}]
 
 
 @pytest.fixture(scope="module")
-def template():
-    app = cdk.App(outdir=tempfile.mkdtemp())
+def outdir():
+    return tempfile.mkdtemp()
+
+
+@pytest.fixture(scope="module")
+def template(outdir):
+    app = cdk.App(outdir=outdir)
     stack = PhotoSyncPipeline(app, "T", zones=json.dumps(ZONES), bucket="test-bucket", env=cdk.Environment(account="123456789012", region="us-east-1"))
     return Template.from_stack(stack)
 
@@ -124,3 +129,71 @@ def test_iam(template):
 
 def test_tags(template):
     template.has_resource_properties("AWS::DynamoDB::Table", {"Tags": Match.array_with([{"Key": "project", "Value": "photo-sync"}])})
+
+
+def _evaluator_role_statements(template):
+    fn = next(v for v in template.find_resources("AWS::Lambda::Function").values() if v["Properties"]["FunctionName"] == "photo-sync-evaluator")
+    role = fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    out = []
+    for p in template.find_resources("AWS::IAM::Policy").values():
+        if any(r["Ref"] == role for r in p["Properties"]["Roles"]):
+            out += p["Properties"]["PolicyDocument"]["Statement"]
+    return out
+
+
+def test_evaluator_lambda(template):
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "FunctionName": "photo-sync-evaluator",
+        "PackageType": "Image",
+        "Architectures": ["arm64"],
+        "MemorySize": 512,
+        "Timeout": 120,
+        "ImageConfig": {"Command": ["photo_sync.evaluator.handler"]},
+        "Environment": {"Variables": {"TABLE_NAME": "photo-sync", "HOME_ZONES_PARAM": "/photo-sync/home-zones"}},
+    })
+    template.has_resource_properties("AWS::Lambda::EventInvokeConfig", {"MaximumRetryAttempts": 0})
+
+
+def test_evaluator_schedule(template):
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "Name": "photo-sync-evaluator-daily",
+        "ScheduleExpression": "cron(0 9 * * ? *)",
+        "ScheduleExpressionTimezone": "America/New_York",
+        "FlexibleTimeWindow": {"Mode": "OFF"},
+        "Target": {"Arn": Match.any_value(), "RoleArn": Match.any_value()},
+    })
+    template.has_resource_properties("AWS::IAM::Role", {
+        "AssumeRolePolicyDocument": {"Statement": [Match.object_like({"Principal": {"Service": "scheduler.amazonaws.com"}})]},
+    })
+    invoke = [s for p in template.find_resources("AWS::IAM::Policy").values() for s in p["Properties"]["PolicyDocument"]["Statement"]
+              if s["Action"] == "lambda:InvokeFunction"]
+    assert len(invoke) == 1
+    assert "Evaluator" in json.dumps(invoke[0]["Resource"]) and "Indexer" not in json.dumps(invoke[0]["Resource"])
+
+
+def test_evaluator_iam(template):
+    stmts = _evaluator_role_statements(template)
+    actions = {a for s in stmts for a in _actions(s)}
+    assert {"ssm:GetParameter", "dynamodb:PutItem", "dynamodb:Query"} <= actions
+    assert not any(a.split(":")[0] in {"s3", "bedrock", "geo-places"} for a in actions)
+    assert "dynamodb:*" not in actions
+    blob = json.dumps(stmts)
+    assert "parameter/photo-sync/home-zones" in blob and "parameter/photo-sync/*" not in blob
+    assert "/index/*" in blob
+
+
+def test_evaluator_alarm(template):
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": "photo-sync-evaluator-errors", "MetricName": "Errors", "Namespace": "AWS/Lambda",
+        "Threshold": 1, "Period": 300, "EvaluationPeriods": 1, "Statistic": "Sum",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching",
+        "AlarmActions": [Match.string_like_regexp(r"photo-sync-cost-alerts")],
+    })
+
+
+def test_single_image_asset(template, outdir):
+    fns = [v["Properties"] for v in template.find_resources("AWS::Lambda::Function").values() if v["Properties"].get("PackageType") == "Image"]
+    assert len(fns) == 2
+    assert fns[0]["Code"]["ImageUri"] == fns[1]["Code"]["ImageUri"]
+    manifest = json.load(open(os.path.join(outdir, "T.assets.json")))
+    assert len(manifest["dockerImages"]) == 1
