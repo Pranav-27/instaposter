@@ -1,0 +1,13 @@
+.env
+.env.*
+.venv
+.git
+.gitignore
+tests
+cdk.out
+infrastructure
+*.egg-info
+**/__pycache__
+.pytest_cache
+build
+*.md
