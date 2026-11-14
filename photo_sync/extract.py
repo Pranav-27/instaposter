@@ -69,7 +69,7 @@ def _gps(gps) -> tuple:
     alt = _num(gps.get(6))
     if alt is not None and gps.get(5) in (1, b"\x01"):
         alt = -alt
-    speed = _num(gps.get(11))
+    speed = _num(gps.get(13))
     if speed is not None:
         speed *= SPEED_TO_KMH.get(_str(gps.get(12)) or "K", 1.0)
     return lat, lon, alt, speed, _num(gps.get(17))

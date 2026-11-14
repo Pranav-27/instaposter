@@ -31,6 +31,7 @@ def test_heic_fields(heic):
     assert (e.make, e.model) == (want["make"], want["model"])
     assert e.captured_at == want["captured_at"]
     assert e.utc_offset == want["utc_offset"]
+    assert e.speed_kmh == pytest.approx(want["speed_kmh"], abs=0.01)
     assert len(e.phash) == 16 and e.sharpness > 0
 
 
@@ -82,9 +83,9 @@ def test_naive_time_is_new_york():
 
 def test_gps_parsing():
     gps = {1: "S", 2: (33.0, 30.0, 0.0), 3: "W", 4: (70.0, 0.0, 36.0), 5: b"\x01", 6: 10.0,
-           11: 10.0, 12: "M", 17: 90.0}
+           13: 10.0, 12: "M", 17: 90.0}
     lat, lon, alt, speed, direction = _gps(gps)
     assert lat == pytest.approx(-33.5) and lon == pytest.approx(-70.01)
     assert alt == -10.0 and speed == pytest.approx(16.09344) and direction == 90.0
     assert _gps({}) == (None,) * 5
-    assert _gps({11: 10.0, 12: "N"})[3] == pytest.approx(18.52)
+    assert _gps({13: 10.0, 12: "N"})[3] == pytest.approx(18.52)
