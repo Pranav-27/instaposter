@@ -166,9 +166,9 @@ def test_evaluator_schedule(template):
         "AssumeRolePolicyDocument": {"Statement": [Match.object_like({"Principal": {"Service": "scheduler.amazonaws.com"}})]},
     })
     invoke = [s for p in template.find_resources("AWS::IAM::Policy").values() for s in p["Properties"]["PolicyDocument"]["Statement"]
-              if s["Action"] == "lambda:InvokeFunction"]
+              if s["Action"] == "lambda:InvokeFunction" and "Evaluator" in json.dumps(s["Resource"])]
     assert len(invoke) == 1
-    assert "Evaluator" in json.dumps(invoke[0]["Resource"]) and "Indexer" not in json.dumps(invoke[0]["Resource"])
+    assert "Indexer" not in json.dumps(invoke[0]["Resource"])
 
 
 def test_evaluator_iam(template):
@@ -193,7 +193,127 @@ def test_evaluator_alarm(template):
 
 def test_single_image_asset(template, outdir):
     fns = [v["Properties"] for v in template.find_resources("AWS::Lambda::Function").values() if v["Properties"].get("PackageType") == "Image"]
-    assert len(fns) == 2
-    assert fns[0]["Code"]["ImageUri"] == fns[1]["Code"]["ImageUri"]
+    assert len(fns) == 4
+    assert len({json.dumps(f["Code"]["ImageUri"], sort_keys=True) for f in fns}) == 1
     manifest = json.load(open(os.path.join(outdir, "T.assets.json")))
     assert len(manifest["dockerImages"]) == 1
+
+
+def _fn(template, name):
+    return next(v for v in template.find_resources("AWS::Lambda::Function").values() if v["Properties"]["FunctionName"] == name)
+
+
+def _role_statements(template, name):
+    role = _fn(template, name)["Properties"]["Role"]["Fn::GetAtt"][0]
+    out = []
+    for p in template.find_resources("AWS::IAM::Policy").values():
+        if any(r["Ref"] == role for r in p["Properties"]["Roles"]):
+            out += p["Properties"]["PolicyDocument"]["Statement"]
+    return out
+
+
+def _curation_env():
+    return {
+        "TABLE_NAME": "photo-sync", "BUCKET": "test-bucket",
+        "CURATOR_MODEL": "us.anthropic.claude-opus-4-6-v1", "CAPTION_MODEL": "us.anthropic.claude-opus-4-6-v1",
+        "TAGGING_MODEL": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "BOT_FUNCTION": "photo-sync-bot",
+        "HOME_PLACE_NAMES": "",
+    }
+
+
+@pytest.mark.parametrize("name,cmd", [("photo-sync-curator", "photo_sync.curator.handler"), ("photo-sync-bot", "photo_sync.bot.handler")])
+def test_curation_lambdas(template, name, cmd):
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "FunctionName": name, "PackageType": "Image", "Architectures": ["arm64"],
+        "MemorySize": 2048, "Timeout": 300,
+        "ImageConfig": {"Command": [cmd]},
+        "Environment": {"Variables": _curation_env()},
+    })
+    template.has_resource_properties("AWS::Lambda::EventInvokeConfig", {
+        "FunctionName": {"Ref": Match.string_like_regexp(name == "photo-sync-bot" and "Bot" or "Curator")},
+        "MaximumRetryAttempts": 0,
+    })
+    assert "ReservedConcurrentExecutions" not in _fn(template, name)["Properties"]
+
+
+def test_bot_function_url(template):
+    template.has_resource_properties("AWS::Lambda::Url", {"AuthType": "NONE", "TargetFunctionArn": Match.any_value()})
+    urls = template.find_resources("AWS::Lambda::Url")
+    assert len(urls) == 1 and "Cors" not in next(iter(urls.values()))["Properties"]
+    template.has_output("BotFunctionUrl", {})
+
+
+def test_bot_sns_subscription(template):
+    template.has_resource_properties("AWS::SNS::Subscription", {
+        "Protocol": "lambda",
+        "TopicArn": Match.string_like_regexp(r"photo-sync-cost-alerts"),
+        "Endpoint": Match.any_value(),
+    })
+    template.has_resource_properties("AWS::Lambda::Permission", {
+        "Action": "lambda:InvokeFunction", "Principal": "sns.amazonaws.com",
+        "FunctionName": Match.any_value(),
+    })
+
+
+def test_bot_self_invoke(template):
+    invoke = [s for s in _role_statements(template, "photo-sync-bot") if "lambda:InvokeFunction" in _actions(s)]
+    assert len(invoke) == 1
+    assert "function:photo-sync-bot" in json.dumps(invoke[0]["Resource"])
+    assert "photo-sync-curator" not in json.dumps(invoke[0]["Resource"])
+
+
+@pytest.mark.parametrize("name", ["photo-sync-curator", "photo-sync-bot"])
+def test_curation_iam(template, name):
+    stmts = _role_statements(template, name)
+    actions = {a for s in stmts for a in _actions(s)}
+    assert {s.split(":")[0] for s in actions} <= {"s3", "dynamodb", "ssm", "bedrock", "lambda", "logs", "xray"}
+    assert "geo-places:ReverseGeocode" not in actions and "dynamodb:*" not in actions and "s3:*" not in actions
+    s3_stmts = [s for s in stmts if any(a.startswith("s3:") for a in _actions(s))]
+    assert len(s3_stmts) == 2
+    get = next(s for s in s3_stmts if _actions(s) == ["s3:GetObject"])
+    put = next(s for s in s3_stmts if _actions(s) == ["s3:PutObject"])
+    assert len(get["Resource"]) == 2
+    assert ":s3:::test-bucket/originals/*" in json.dumps(get["Resource"]) and ":s3:::test-bucket/derived/*" in json.dumps(get["Resource"])
+    assert ":s3:::test-bucket/renders/*" in json.dumps(put["Resource"])
+    assert "originals" not in json.dumps(put["Resource"]) and "renders" not in json.dumps(get["Resource"])
+    ssm_stmts = [s for s in stmts if any(a.startswith("ssm:") for a in _actions(s))]
+    assert len(ssm_stmts) == 1 and _actions(ssm_stmts[0]) == ["ssm:GetParameter"]
+    assert "parameter/photo-sync/telegram/*" in json.dumps(ssm_stmts[0]["Resource"])
+    bedrock = next(s for s in stmts if "bedrock:InvokeModel" in _actions(s))
+    blob = json.dumps(bedrock["Resource"])
+    for needle in (
+        "inference-profile/us.anthropic.claude-opus-4-6-v1", "inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1", "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+    ):
+        assert needle in blob
+    assert len(bedrock["Resource"]) == 4
+    assert "/index/*" in json.dumps(stmts)
+
+
+def test_evaluator_curator_wiring(template):
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "FunctionName": "photo-sync-evaluator",
+        "Environment": {"Variables": {"TABLE_NAME": "photo-sync", "HOME_ZONES_PARAM": "/photo-sync/home-zones", "CURATOR_FUNCTION": "photo-sync-curator"}},
+    })
+    stmts = _evaluator_role_statements(template)
+    invoke = [s for s in stmts if "lambda:InvokeFunction" in _actions(s)]
+    assert len(invoke) == 1 and "Curator" in json.dumps(invoke[0]["Resource"]) and "Bot" not in json.dumps(invoke[0]["Resource"])
+    ssm_resources = json.dumps([s["Resource"] for s in stmts if "ssm:GetParameter" in _actions(s)])
+    assert "parameter/photo-sync/telegram/*" in ssm_resources and "parameter/photo-sync/home-zones" in ssm_resources
+    assert "parameter/photo-sync/*" not in ssm_resources
+    actions = {a for s in stmts for a in _actions(s)}
+    assert not any(a.split(":")[0] in {"s3", "bedrock", "geo-places"} for a in actions)
+
+
+def test_ttl(template):
+    template.has_resource_properties("AWS::DynamoDB::Table", {"TimeToLiveSpecification": {"AttributeName": "ttl", "Enabled": True}})
+
+
+@pytest.mark.parametrize("name", ["photo-sync-curator-errors", "photo-sync-bot-errors"])
+def test_curation_alarms(template, name):
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": name, "MetricName": "Errors", "Namespace": "AWS/Lambda",
+        "Threshold": 1, "Period": 300, "EvaluationPeriods": 1, "Statistic": "Sum",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching",
+        "AlarmActions": [Match.string_like_regexp(r"photo-sync-cost-alerts")],
+    })

@@ -1,8 +1,19 @@
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from photo_sync import config, grouping
+import boto3
+
+from photo_sync import config, flow, grouping
 from photo_sync.common import db
+
+
+def _invoke_curator(collection_id: str) -> None:
+    boto3.client("lambda", region_name=config.REGION).invoke(
+        FunctionName=config.CURATOR_FUNCTION,
+        InvocationType="Event",
+        Payload=json.dumps({"collection_id": collection_id}).encode(),
+    )
 
 
 def handler(event, context):
@@ -39,6 +50,12 @@ def handler(event, context):
     if not dry_run:
         for id in stale:
             db.delete_collection(id)
+    curated = expired = 0
+    if not dry_run:
+        for id in ready_ids:
+            _invoke_curator(id)
+            curated += 1
+        expired = flow.expire_stale(now)
     return {
         "photos": len(photos),
         **counts,
@@ -47,4 +64,6 @@ def handler(event, context):
         "deleted": len(stale),
         "dry_run": dry_run,
         "ready_ids": ready_ids,
+        "curated": curated,
+        "expired": expired,
     }

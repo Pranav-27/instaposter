@@ -90,3 +90,41 @@ class Collection:
     member_hash: str
     ready: bool
     closed: bool
+
+
+@dataclass
+class Slide:
+    sha256: str
+    crop: list[float]
+    alt_text: str = ""
+    render_key: str | None = None
+
+
+@dataclass
+class Proposal:
+    id: str
+    collection_id: str
+    version: int
+    state: str
+    post_type: str
+    slides: list[Slide]
+    captions: list[str]
+    chosen_caption: str | None
+    place: str | None
+    created_at: str
+    expires_at: str
+
+
+@dataclass
+class Curation:
+    order: list[str]
+    crops: dict[str, list[float]]
+    alt_text: dict[str, str]
+    captions: list[str]
+
+
+@dataclass
+class Intent:
+    action: str
+    params: dict = field(default_factory=dict)
+    critique: dict | None = None
