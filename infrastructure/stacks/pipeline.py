@@ -149,7 +149,7 @@ class PhotoSyncPipeline(cdk.Stack):
         def grant_curation(f: _lambda.Function) -> None:
             f.add_to_role_policy(iam.PolicyStatement(
                 actions=["s3:GetObject"],
-                resources=[bucket.arn_for_objects("originals/*"), bucket.arn_for_objects("derived/*")],
+                resources=[bucket.arn_for_objects("originals/*"), bucket.arn_for_objects("derived/*"), bucket.arn_for_objects("renders/*")],
             ))
             f.add_to_role_policy(iam.PolicyStatement(actions=["s3:PutObject"], resources=[bucket.arn_for_objects("renders/*")]))
             table.grant_read_write_data(f)

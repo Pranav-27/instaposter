@@ -54,3 +54,8 @@ def test_home_names_come_from_the_nested_place_map(monkeypatch):
         {"in_home_zone": True},
     ]
     assert flow._home_names(photos) == ["Hood", "Town", "Extra"]
+
+
+def test_weekday_is_spelled_out_for_the_model():
+    assert flow._when("2026-11-14T18:30:00-05:00") == "Saturday 2026-11-14 18:30"
+    assert flow._when(None) is None and flow._when("garbage") == "garbage"

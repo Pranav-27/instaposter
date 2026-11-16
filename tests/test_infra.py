@@ -272,10 +272,11 @@ def test_curation_iam(template, name):
     assert len(s3_stmts) == 2
     get = next(s for s in s3_stmts if _actions(s) == ["s3:GetObject"])
     put = next(s for s in s3_stmts if _actions(s) == ["s3:PutObject"])
-    assert len(get["Resource"]) == 2
-    assert ":s3:::test-bucket/originals/*" in json.dumps(get["Resource"]) and ":s3:::test-bucket/derived/*" in json.dumps(get["Resource"])
+    assert len(get["Resource"]) == 3
+    for prefix in ("originals", "derived", "renders"):
+        assert f":s3:::test-bucket/{prefix}/*" in json.dumps(get["Resource"])
     assert ":s3:::test-bucket/renders/*" in json.dumps(put["Resource"])
-    assert "originals" not in json.dumps(put["Resource"]) and "renders" not in json.dumps(get["Resource"])
+    assert "originals" not in json.dumps(put["Resource"]) and "derived" not in json.dumps(put["Resource"])
     ssm_stmts = [s for s in stmts if any(a.startswith("ssm:") for a in _actions(s))]
     assert len(ssm_stmts) == 1 and _actions(ssm_stmts[0]) == ["ssm:GetParameter"]
     assert "parameter/photo-sync/telegram/*" in json.dumps(ssm_stmts[0]["Resource"])

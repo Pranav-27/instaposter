@@ -32,6 +32,15 @@ def _home_names(photos: list[dict]) -> list[str]:
     return list(dict.fromkeys(names + config.HOME_PLACE_NAMES))
 
 
+def _when(iso: str | None) -> str | None:
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).strftime("%A %Y-%m-%d %H:%M")
+    except ValueError:
+        return iso
+
+
 def _place_name(ph: dict) -> str | None:
     place = ph.get("place") or {}
     return place.get("neighborhood") or place.get("city")
@@ -48,7 +57,7 @@ def _context(p: Proposal, photos: list[dict]) -> dict:
     return {
         "post_type": p.post_type,
         "place": p.place,
-        "captured_range": f"{times[0]} to {times[-1]}" if times else None,
+        "captured_range": f"{_when(times[0])} to {_when(times[-1])}" if times else None,
         "slides": [
             {
                 "tags": (ph.get("tags") or {}).get("tags"),
@@ -110,7 +119,7 @@ def start_proposal(collection_id: str) -> str | None:
         liked, disliked = _examples()
         home_names = _home_names(photos)
         inputs = [
-            {**ph, "place": _place_name(ph), "jpeg": s3.get_object_bytes(ph["jpeg_1024_key"])} for ph in photos
+            {**ph, "captured_at": _when(ph.get("captured_at")), "place": _place_name(ph), "jpeg": s3.get_object_bytes(ph["jpeg_1024_key"])} for ph in photos
         ]
         cur = curator_ai.curate(inputs, item["type"], item.get("place"), liked, disliked, home_names)
         slides = [

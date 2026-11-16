@@ -299,7 +299,15 @@ HDR gain maps are not carried over (SDR output).
     chat type is `private`. This applies to messages and to button
     presses (callback queries). Any failure is a silent drop: return 200
     with no reply, no error text, and no state change.
--   Render immediately; heavy work is invoked asynchronously.
+-   Render immediately; heavy work is invoked asynchronously: the bot
+    Lambda validates the request, records the `update_id`, invokes itself
+    with `InvocationType=Event`, and returns 200 at once; the worker
+    branch runs Claude and rendering. The same Lambda also receives the
+    SNS cost alerts. Button payloads are `<action>|<proposal>|<version>|<arg>`
+    and are checked against the stored proposal state.
+-   "Use this" on a caption approves the proposal (state `APPROVED`);
+    publishing begins in Phase 4. The learning summary is sent after an
+    approval or a rejection.
 -   Idempotency: every version is a DynamoDB conditional write; only one
     version can be published.
 -   Expiry: unapproved proposals expire after 7 days; photos return to
@@ -431,6 +439,14 @@ membership changes. The daily evaluator rewrites `READY`/`OPEN` items,
 deletes stale ones, skips `PROPOSED`, and keeps `SUPPRESSED` items
 suppressed until `member_hash` changes.
 
+Proposal items: `pk=PROPOSAL#<id>`, `sk=V#<version>`, `gsi1pk=PROPOSALS#<state>`
+(states `SENT`, `APPROVED`, `REJECTED`, `EXPIRED`, `SUPERSEDED`); each
+reorder or removal writes a new version. Caption items
+(`CAPTION#<proposal>`), feedback items, Telegram message references,
+update-id replay records and pending learning summaries share the table;
+the replay and message records carry a `ttl` attribute (TTL enabled).
+Photo states are `POOL`, `PROPOSED`, `POSTED`.
+
 Useful access patterns: - Photos by status and time. - Collections by
 status and time. - Proposals by status. - Recent posts (for caption voice).
 
@@ -533,6 +549,10 @@ Infrastructure as code: AWS CDK (Python).
     renders only through short-lived presigned URLs.
 -   Renders carry no EXIF/GPS; captions never include street addresses.
 -   Least privilege per Lambda; the phone's credentials can only upload.
+-   The account's Lambda concurrency limit is 10, which is below the 100
+    AWS needs to allow reserved concurrency, so the bot has none. Request
+    a quota increase; until then a flood to the public URL could briefly
+    throttle other functions, though rejected requests are cheap.
 -   Telegram webhook authenticated by secret header, then an allowlist
     on sender user ID, chat ID, and private chat type; rejected requests
     are dropped silently.
@@ -633,6 +653,9 @@ photo_sync/
 
 ### Proposed defaults, not yet confirmed
 
+-   Phase 3: tapping "Use this" approves; the learning summary follows
+    approval or rejection; routing of free-text replies uses Haiku 4.5;
+    captions get explicit weekday names so the model does not guess them.
 -   Phase 2 choices: the 48-hour trip split, dropping undersized closed
     collections into the dump, one dump pool across closed months, the
     blur cutoff, and the near-duplicate thresholds.
