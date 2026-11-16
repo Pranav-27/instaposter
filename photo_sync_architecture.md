@@ -294,7 +294,11 @@ HDR gain maps are not carried over (SDR output).
         not interesting); photos are released back to the pool and the collection is
         suppressed until its membership changes (§5.4).
 -   Handler: Lambda Function URL. Verify the Telegram bot secret-token
-    header and allow only the owner's chat ID.
+    header (constant-time compare) first, then require that the sender's
+    user ID and the chat ID both equal the owner's stored ID and that the
+    chat type is `private`. This applies to messages and to button
+    presses (callback queries). Any failure is a silent drop: return 200
+    with no reply, no error text, and no state change.
 -   Render immediately; heavy work is invoked asynchronously.
 -   Idempotency: every version is a DynamoDB conditional write; only one
     version can be published.
@@ -529,8 +533,9 @@ Infrastructure as code: AWS CDK (Python).
     renders only through short-lived presigned URLs.
 -   Renders carry no EXIF/GPS; captions never include street addresses.
 -   Least privilege per Lambda; the phone's credentials can only upload.
--   Telegram webhook authenticated by secret header and chat ID
-    allowlist.
+-   Telegram webhook authenticated by secret header, then an allowlist
+    on sender user ID, chat ID, and private chat type; rejected requests
+    are dropped silently.
 -   Secrets only in SSM; nothing secret in code or environment
     variables.
 
